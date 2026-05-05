@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>마감자 타임별 건수 변환기</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f6f7fb;
+      padding: 40px;
+      color: #222;
+    }
+
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      background: #fff;
+      padding: 32px;
+      border-radius: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 26px;
+    }
+
+    .desc {
+      line-height: 1.6;
+      color: #555;
+      margin-bottom: 24px;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 16px;
+      border: 2px dashed #bbb;
+      border-radius: 12px;
+      background: #fafafa;
+      margin-bottom: 20px;
+    }
+
+    button {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      background: #111827;
+      color: #fff;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #374151;
+    }
+
+    .note {
+      margin-top: 20px;
+      font-size: 14px;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    .result {
+      margin-top: 20px;
+      font-weight: bold;
+      color: #0f766e;
+    }
+  </style>
+</head>
+<body>
+
+<div class="wrap">
+  <h1>마감자 타임별 건수 변환기</h1>
+
+  <div class="desc">
+    엑셀 파일을 업로드하면 아래 기준으로 자동 집계됩니다.<br><br>
+    <b>필수 컬럼:</b> 마감일시, 마감자, 출고박스<br>
+    <b>마감자 변환:</b> p001 → 1 / p012 → 12<br>
+    <b>시간 기준:</b> 9시~10시, 10시~11시, 11시~12시30분, 12시30분~2시, 2시~
+  </div>
+
+  <input type="file" id="fileInput" accept=".xlsx,.xls" />
+  <button onclick="convertFile()">변환 파일 다운로드</button>
+
+  <div class="note">
+    ※ 첫 번째 시트를 기준으로 변환합니다.<br>
+    ※ 원본 파일은 서버에 업로드되지 않고, 브라우저에서만 처리됩니다.
+  </div>
+
+  <div id="result" class="result"></div>
+</div>
+
+<script>
+function convertFile() {
+  const fileInput = document.getElementById("fileInput");
+  const resultBox = document.getElementById("result");
+
+  if (!fileInput.files.length) {
+    alert("엑셀 파일을 먼저 업로드해주세요.");
+    return;
+  }
+
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+
+  reader.onload = function(e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: "array", cellDates: true });
+
+      const firstSheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[firstSheetName];
+
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: ""
+      });
+
+      if (rows.length < 2) {
+        alert("데이터가 없습니다.");
+        return;
+      }
+
+      const headers = rows[0].map(h => String(h).trim());
+
+      const timeCol = headers.indexOf("마감일시");
+      const userCol = headers.indexOf("마감자");
+      const boxCol = headers.indexOf("출고박스");
+
+      if (timeCol === -1 || userCol === -1 || boxCol === -1) {
+        alert("필수 컬럼을 찾을 수 없습니다.\n필수 컬럼: 마감일시, 마감자, 출고박스");
+        return;
+      }
+
+      const summary = {};
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+
+        const closeTime = row[timeCol];
+        const closerRaw = row[userCol];
+        const box = row[boxCol];
+
+        if (!closeTime || !closerRaw) continue;
+
+        const closer = cleanCloser(closerRaw);
+        const group = getTimeGroup(closeTime);
+
+        if (!summary[closer]) {
+          summary[closer] = {
+            "마감자": closer,
+            "총건수": 0,
+            "9시~10시": 0,
+            "10시~11시": 0,
+            "11시~12시30분": 0,
+            "12시30분~2시": 0,
+            "2시~": 0,
+            "9시 이전": 0
+          };
+        }
+
+        summary[closer]["총건수"]++;
+        summary[closer][group]++;
+      }
+
+      const output = [
+        [
+          "마감자",
+          "총건수",
+          "9시~10시",
+          "10시~11시",
+          "11시~12시30분",
+          "12시30분~2시",
+          "2시~",
+          "9시 이전"
+        ]
+      ];
+
+      Object.keys(summary)
+        .sort((a, b) => Number(a) - Number(b))
+        .forEach(key => {
+          const item = summary[key];
+          output.push([
+            item["마감자"],
+            item["총건수"],
+            item["9시~10시"],
+            item["10시~11시"],
+            item["11시~12시30분"],
+            item["12시30분~2시"],
+            item["2시~"],
+            item["9시 이전"]
+          ]);
+        });
+
+      const newWb = XLSX.utils.book_new();
+      const newWs = XLSX.utils.aoa_to_sheet(output);
+
+      newWs["!cols"] = [
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 18 },
+        { wch: 18 },
+        { wch: 12 },
+        { wch: 12 }
+      ];
+
+      XLSX.utils.book_append_sheet(newWb, newWs, "타임별_마감자_요약");
+
+      XLSX.writeFile(newWb, "타임별_마감자_요약.xlsx");
+
+      resultBox.textContent = "변환 완료! 다운로드 파일을 확인해주세요.";
+
+    } catch (err) {
+      console.error(err);
+      alert("변환 중 오류가 발생했습니다. 엑셀 컬럼명과 시간 형식을 확인해주세요.");
+    }
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+
+function cleanCloser(value) {
+  let v = String(value).trim().toLowerCase();
+
+  v = v.replace(/^p/i, "");
+  v = v.replace(/^0+/, "");
+
+  if (v === "") return "0";
+
+  return v;
+}
+
+function getTimeGroup(value) {
+  const time = extractTime(value);
+
+  if (!time) return "9시 이전";
+
+  const totalMinutes = time.hour * 60 + time.minute + time.second / 60;
+
+  if (totalMinutes >= 9 * 60 && totalMinutes < 10 * 60) {
+    return "9시~10시";
+  }
+
+  if (totalMinutes >= 10 * 60 && totalMinutes < 11 * 60) {
+    return "10시~11시";
+  }
+
+  if (totalMinutes >= 11 * 60 && totalMinutes < 12 * 60 + 30) {
+    return "11시~12시30분";
+  }
+
+  if (totalMinutes >= 12 * 60 + 30 && totalMinutes < 14 * 60) {
+    return "12시30분~2시";
+  }
+
+  if (totalMinutes >= 14 * 60) {
+    return "2시~";
+  }
+
+  return "9시 이전";
+}
+
+function extractTime(value) {
+  if (value instanceof Date) {
+    return {
+      hour: value.getHours(),
+      minute: value.getMinutes(),
+      second: value.getSeconds()
+    };
+  }
+
+  const text = String(value).trim();
+
+  // 예: 09:15:30
+  let match = text.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+
+  if (match) {
+    return {
+      hour: Number(match[1]),
+      minute: Number(match[2]),
+      second: Number(match[3] || 0)
+    };
+  }
+
+  // 엑셀 시간값이 0.5 같은 숫자로 들어오는 경우
+  const num = Number(text);
+  if (!isNaN(num) && num >= 0 && num < 1) {
+    const totalSeconds = Math.round(num * 24 * 60 * 60);
+    return {
+      hour: Math.floor(totalSeconds / 3600),
+      minute: Math.floor((totalSeconds % 3600) / 60),
+      second: totalSeconds % 60
+    };
+  }
+
+  return null;
+}
+</script>
+
+</body>
+</html>
